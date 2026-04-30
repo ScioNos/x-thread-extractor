@@ -5,7 +5,6 @@ x_thread_extractor.py — Extraction exhaustive d'un fil X avec toutes ses branc
 Prérequis :
   pip install -r requirements.txt
   playwright install chromium
-  python login_once.py   (une seule fois, pour sauvegarder la session Chrome)
 
 Usage :
   python x_thread_extractor.py https://x.com/USER/status/TWEET_ID
@@ -527,10 +526,10 @@ def ensure_playwright_available():
 
 
 def ensure_runtime_paths(config: Config):
+    """Vérifie les prérequis et crée les répertoires nécessaires."""
     if not config.chrome_exe.is_file():
         raise FileNotFoundError(f"Chrome introuvable : {config.chrome_exe}")
-    if not config.profile_dir.is_dir():
-        raise FileNotFoundError(f"Profil Chrome introuvable : {config.profile_dir}\n   Lance d'abord : python login_once.py")
+    config.profile_dir.mkdir(parents=True, exist_ok=True)
     if config.output_path:
         config.output_path.parent.mkdir(parents=True, exist_ok=True)
 

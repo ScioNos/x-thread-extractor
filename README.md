@@ -10,7 +10,7 @@ playwright install chromium
 
 ## Prérequis
 - Google Chrome installé localement
-- une session X/Twitter déjà enregistrée dans un profil persistant via `login_once.py`
+- Au premier lancement, le script crée automatiquement un profil navigateur (`chromium_profile/`) et te demande de te connecter à X/Twitter dans la fenêtre qui s'ouvre
 
 ## Usage
 ```bash
