@@ -10,6 +10,6 @@ chromium_profile/
 
 # Project specific
 *.json
+CLAUDE.md
 !requirements.txt
-!CLAUDE.md
 !README.md
