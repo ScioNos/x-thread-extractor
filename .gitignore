@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Playwright/Chrome
+chromium_profile/
+
+# Project specific
+*.json
+!requirements.txt
+!CLAUDE.md
+!README.md
