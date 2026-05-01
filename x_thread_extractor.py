@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-x_thread_extractor_optimized.py — Version optimisée pour performance maximale.
+x_thread_extractor.py — Version 2.1.0 avec mode stealth anti-détection.
 
 Optimisations principales :
   - Suppression du rechargement de page parente (gain ~70% de temps)
   - Scroll/expand réduits (2-3 passes au lieu de 8)
   - Attentes adaptatives au lieu de délais fixes
   - Parsing optimisé avec cache des sélecteurs
-  - Option de parallélisation des branches
+  - Mode stealth activé par défaut (masquage WebDriver, délais aléatoires)
 
 Prérequis :
   pip install -r requirements.txt
   playwright install chromium
 
 Usage :
-  python x_thread_extractor_optimized.py https://x.com/USER/status/TWEET_ID
-  python x_thread_extractor_optimized.py https://x.com/USER/status/TWEET_ID --fast
+  python x_thread_extractor.py https://x.com/USER/status/TWEET_ID
+  python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --fast
+  python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --no-stealth
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ try:
 except ModuleNotFoundError:
     PlaywrightTimeout = RuntimeError
     sync_playwright = None
+
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,7 @@ class Config:
     headless: bool = False
     verbose: bool = False
     fast_mode: bool = False  # Nouveau: mode ultra-rapide
+    stealth_mode: bool = True  # Nouveau: mode furtif anti-détection
 
 
 @dataclass
@@ -170,6 +174,7 @@ def parse_args(argv: list[str]) -> Config:
     parser.add_argument("--headless", action="store_true", help="Lancer le navigateur en headless")
     parser.add_argument("--verbose", action="store_true", help="Afficher les erreurs internes détaillées")
     parser.add_argument("--fast", action="store_true", help="Mode ultra-rapide (1 scroll, 1 expand, délais minimaux)")
+    parser.add_argument("--no-stealth", action="store_true", help="Désactiver le mode furtif anti-détection")
     args = parser.parse_args(argv)
 
     root_url = normalize_x_url(args.url)
@@ -191,6 +196,7 @@ def parse_args(argv: list[str]) -> Config:
         headless=args.headless,
         verbose=args.verbose,
         fast_mode=args.fast,
+        stealth_mode=not args.no_stealth,
     )
 
     # Mode fast: réduction drastique des délais
@@ -316,14 +322,19 @@ def check_session(page, url: str, config: Config):
 
 
 def scroll_page(page, config: Config):
-    """Scrolle la page pour charger le contenu dynamique (optimisé)."""
+    """Scrolle la page pour charger le contenu dynamique (optimisé avec délais aléatoires)."""
     for _ in range(config.scroll_passes):
         page.keyboard.press("End")
-        time.sleep(config.scroll_delay)
+        # Délai aléatoire pour simuler un comportement humain
+        if config.stealth_mode:
+            delay = config.scroll_delay + random.uniform(-0.2, 0.3)
+            time.sleep(max(0.3, delay))
+        else:
+            time.sleep(config.scroll_delay)
 
 
 def expand_replies(page, config: Config):
-    """Clique sur les boutons 'afficher plus' pour dérouler les réponses cachées (optimisé)."""
+    """Clique sur les boutons 'afficher plus' pour dérouler les réponses cachées (optimisé avec délais aléatoires)."""
     selectors = [
         'button',
         'div[role="button"]',
@@ -336,12 +347,21 @@ def expand_replies(page, config: Config):
             for button in page.query_selector_all(selector):
                 text = safe_inner_text(button).lower()
                 if any(keyword in text for keyword in EXPAND_KEYWORDS) and safe_click(button):
-                    time.sleep(config.expand_delay)
+                    # Délai aléatoire pour simuler un comportement humain
+                    if config.stealth_mode:
+                        delay = config.expand_delay + random.uniform(-0.3, 0.5)
+                        time.sleep(max(0.5, delay))
+                    else:
+                        time.sleep(config.expand_delay)
                     clicked = True
         # Scroll après expand (réduit)
         for _ in range(SCROLL_PASSES_AFTER_EXPAND):
             page.keyboard.press("End")
-            time.sleep(config.scroll_delay)
+            if config.stealth_mode:
+                delay = config.scroll_delay + random.uniform(-0.2, 0.3)
+                time.sleep(max(0.3, delay))
+            else:
+                time.sleep(config.scroll_delay)
         if not clicked:
             break
 
@@ -396,7 +416,13 @@ def load_page_full(page, url: str, depth: int, config: Config, state: ScrapeStat
             state.stats.errors += 1
             return False
     try:
-        time.sleep(config.nav_wait)
+        # Délai aléatoire après navigation si mode stealth
+        if config.stealth_mode:
+            delay = config.nav_wait + random.uniform(-0.3, 0.5)
+            time.sleep(max(0.5, delay))
+        else:
+            time.sleep(config.nav_wait)
+
         check_session(page, url, config)
         try:
             page.wait_for_selector('article[data-testid="tweet"]', timeout=min(config.page_timeout_ms, ARTICLE_WAIT_TIMEOUT_MS))
@@ -590,25 +616,82 @@ def main(argv: Optional[list[str]] = None) -> int:
     started_at = time.time()
 
     print(f"{'═' * 60}")
-    print(f"🚀 X Thread Extractor (VERSION OPTIMISÉE)")
+    print(f"🚀 X Thread Extractor v2.1.0 (Stealth Mode)")
     print(f"{'═' * 60}")
     print(f"URL racine      : {config.root_url}")
     print(f"Profondeur max  : {config.max_depth}")
     print(f"Mode fast       : {'✓' if config.fast_mode else '✗'}")
+    print(f"Mode stealth    : {'✓' if config.stealth_mode else '✗'}")
     print(f"Scroll passes   : {config.scroll_passes}")
     print(f"Expand passes   : {config.expand_passes}")
     print(f"{'═' * 60}\n")
 
     with sync_playwright() as playwright:
+        # Options de lancement anti-détection
+        launch_args = ["--disable-blink-features=AutomationControlled"]
+
+        if config.stealth_mode:
+            # Arguments supplémentaires pour masquer l'automatisation
+            launch_args.extend([
+                "--disable-dev-shm-usage",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-site-isolation-trials",
+            ])
+
         context = playwright.chromium.launch_persistent_context(
             str(config.profile_dir),
             headless=config.headless,
             executable_path=str(config.chrome_exe),
-            args=["--disable-blink-features=AutomationControlled"],
+            args=launch_args,
             viewport={"width": 1280, "height": 1024},
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
+
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(config.page_timeout_ms)
+
+        # Injection de scripts anti-détection si mode stealth activé
+        if config.stealth_mode:
+            stealth_script = """
+            // Masquer les propriétés WebDriver
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+
+            // Masquer les propriétés Playwright/Automation
+            delete navigator.__proto__.webdriver;
+
+            // Ajouter des propriétés de navigateur réel
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['fr-FR', 'fr', 'en-US', 'en']
+            });
+
+            // Masquer les traces de headless Chrome
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+
+            // Permissions API
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // Chrome runtime
+            window.chrome = {
+                runtime: {}
+            };
+            """
+            page.add_init_script(stealth_script)
 
         root_identifier = tweet_id(config.root_url)
         if not root_identifier:
