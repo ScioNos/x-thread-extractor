@@ -120,7 +120,7 @@ class ScrapeStateTest(unittest.TestCase):
 
 class OutputHelpersTest(unittest.TestCase):
     def test_build_output_path_includes_tweet_id_and_json_suffix(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
             path = build_output_path(Path(tmp), "https://x.com/user/status/987654321")
             self.assertTrue(path.name.startswith("fil_x_987654321_"))
             self.assertEqual(path.suffix, ".json")

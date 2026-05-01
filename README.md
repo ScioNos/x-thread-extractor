@@ -2,15 +2,44 @@
 
 Outil Python local pour extraire un tweet X/Twitter et ses branches de réponses via Playwright.
 
-**Version 2.1.0** — Mode stealth anti-détection + optimisations de performance (70-85% plus rapide).
+**Version 2.2.0** — Mode stealth anti-détection + optimisations de performance + analyse Debuk via API OpenAI-compatible.
 
 **Nouveau** : Mode stealth activé par défaut pour contourner les systèmes anti-bot.
 
 ## Installation
 ```bash
+conda activate test
 pip install -r requirements.txt
 playwright install chromium
 ```
+
+## Configuration `.env`
+
+Copie `.env.example` vers `.env`, puis renseigne au minimum :
+
+```env
+OPENAI_BASE_URL=https://routerlab.ch/v1
+OPENAI_API_KEY=your-api-key
+OPENAI_ANALYSIS_MODEL=your-analysis-model
+OPENAI_RESEARCH_MODEL=your-research-model
+```
+
+Variables disponibles :
+
+| Variable | Description | Défaut |
+|---|---|---|
+| `OPENAI_BASE_URL` | Base URL de l'API OpenAI-compatible | `https://routerlab.ch/v1` |
+| `OPENAI_API_KEY` | Clé API | vide |
+| `OPENAI_ANALYSIS_MODEL` | Modèle pour le rapport final Debuk | vide |
+| `OPENAI_RESEARCH_MODEL` | Modèle pour générer les requêtes de vérification | identique au modèle d'analyse |
+| `OPENAI_REQUEST_TIMEOUT` | Timeout HTTP en secondes | `120` |
+| `OPENAI_TEMPERATURE` | Température du rapport final | `0.2` |
+| `DEBUNK_FACT_CHECK_QUERIES` | Nombre max de requêtes factuelles | `4` |
+| `DEBUNK_SEARCH_REGION` | Région DDGS | `fr-fr` |
+| `DEBUNK_SEARCH_SAFESEARCH` | SafeSearch DDGS | `moderate` |
+| `DEBUNK_SEARCH_MAX_RESULTS` | Résultats DDGS par requête | `5` |
+| `DEBUNK_EXTRACT_TOP_N` | Sources enrichies avec extraction de contenu | `2` |
+| `DEBUNK_EXTRACT_MAX_CHARS` | Taille max des extraits DDGS | `1200` |
 
 ## Prérequis
 - Google Chrome installé localement
@@ -20,13 +49,27 @@ playwright install chromium
 
 ### Mode standard (optimisé + stealth)
 ```bash
+conda activate test
 python x_thread_extractor.py https://x.com/USER/status/TWEET_ID
 ```
 
 ### Mode ultra-rapide (recommandé pour les gros fils)
 ```bash
+conda activate test
 python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --fast
 ```
+
+### Extraction + analyse Debuk
+```bash
+conda activate test
+python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --analyze
+```
+
+Le mode `--analyze` :
+- utilise une API compatible OpenAI configurable dans `.env`
+- prépare des requêtes factuelles avec le modèle `OPENAI_RESEARCH_MODEL`
+- interroge le moteur de recherche `ddgs`
+- génère un rapport Markdown `*.analysis.md` avec le prompt système Debuk
 
 ### Exemples avancés
 ```bash
@@ -54,6 +97,11 @@ python x_thread_extractor.py <url> --no-stealth
 | `--non-interactive` | Échoue si la session est expirée au lieu d'attendre | Désactivé |
 | `--headless` | Lance le navigateur sans fenêtre visible | Désactivé |
 | `--verbose` | Affiche les erreurs internes détaillées (debug) | Désactivé |
+| `--analyze` | Génère un rapport Markdown Debuk après extraction | Désactivé |
+| `--analysis-output FILE` | Chemin du rapport Markdown | `*.analysis.md` |
+| `--analysis-model MODEL` | Surcharge du modèle de rapport final | `.env` |
+| `--research-model MODEL` | Surcharge du modèle de recherche factuelle | `.env` |
+| `--no-search` | Analyse sans DDGS ni vérification web | Désactivé |
 | `--nav-wait N` | Secondes d'attente après navigation | 1.5 (0.8 en fast) |
 | `--scroll-passes N` | Nombre de scrolls par page | 3 (1 en fast) |
 | `--scroll-delay N` | Délai entre scrolls (secondes) | 0.8 (0.5 en fast) |
@@ -87,6 +135,11 @@ Ce script ouvre un navigateur avec le mode stealth et te permet de tester sur de
 
 ## Comportement
 
+### Nouveautés v2.2.0
+- **Analyse Debuk optionnelle** : génération d'un rapport Markdown via API OpenAI-compatible
+- **Configuration `.env`** : `OPENAI_BASE_URL`, modèles, clé API, paramètres de recherche
+- **Recherche factuelle DDGS** : préparation des requêtes puis enrichissement avec sources web
+
 ### Nouveautés v2.1.0
 - **Mode stealth anti-détection** : Masquage WebDriver, délais aléatoires, empreinte navigateur réaliste
 - **Activé par défaut** : Protection contre les systèmes anti-bot de X/Twitter
@@ -111,6 +164,7 @@ Ce script ouvre un navigateur avec le mode stealth et te permet de tester sur de
 
 Par défaut, la sortie est générée dans le dossier du script avec un nom de type :
 - `fil_x_<tweet_id>_<timestamp>.json`
+- `fil_x_<tweet_id>_<timestamp>.analysis.md` si `--analyze` est activé
 
 ### Structure JSON
 ```json
@@ -166,14 +220,10 @@ Le mode stealth de Playwright implémente les techniques suivantes :
 
 📖 Voir [STEALTH_FEATURES.md](STEALTH_FEATURES.md) pour une comparaison détaillée.
 
-## Migration depuis v1.0
+## Reproduire l'ancien comportement
 
-Si tu as besoin de l'ancien comportement (plus lent mais plus exhaustif) :
+Si tu as besoin d'un comportement plus lent mais plus exhaustif, ajuste simplement les paramètres :
 ```bash
-# Utiliser le fichier de backup
-python x_thread_extractor_backup.py <url>
-
-# Ou ajuster les paramètres pour simuler v1.0
 python x_thread_extractor.py <url> \
   --nav-wait 2.5 \
   --scroll-passes 8 \
@@ -186,11 +236,13 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour tous les détails.
 
 ## Historique des Versions
 
+- **v2.2.0** (2026-05-01) : Analyse Debuk, config `.env`, API OpenAI-compatible, recherche DDGS
 - **v2.1.0** (2026-05-01) : Mode stealth anti-détection, délais aléatoires, masquage WebDriver
 - **v2.0.0** (2026-05-01) : Optimisations majeures de performance (70-85% plus rapide)
 - **v1.0.0** (2025-01-XX) : Version initiale
 
 ## Tests
 ```bash
+conda activate test
 python -m unittest discover -s tests
 ```

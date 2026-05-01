@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-x_thread_extractor.py — Version 2.1.0 avec mode stealth anti-détection.
+x_thread_extractor.py — Version 2.2.0 avec mode stealth anti-détection et analyse LLM optionnelle.
 
 Optimisations principales :
   - Suppression du rechargement de page parente (gain ~70% de temps)
@@ -17,6 +17,7 @@ Usage :
   python x_thread_extractor.py https://x.com/USER/status/TWEET_ID
   python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --fast
   python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --no-stealth
+  python x_thread_extractor.py https://x.com/USER/status/TWEET_ID --analyze
 """
 
 from __future__ import annotations
@@ -42,6 +43,12 @@ except ModuleNotFoundError:
     sync_playwright = None
 
 import random
+
+from thread_analysis import (
+    build_analysis_output_path,
+    generate_analysis_report,
+    load_analysis_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +131,11 @@ class Config:
     verbose: bool = False
     fast_mode: bool = False  # Nouveau: mode ultra-rapide
     stealth_mode: bool = True  # Nouveau: mode furtif anti-détection
+    analyze: bool = False
+    analysis_output_path: Optional[Path] = None
+    analysis_model: Optional[str] = None
+    research_model: Optional[str] = None
+    use_search: bool = True
 
 
 @dataclass
@@ -175,10 +187,16 @@ def parse_args(argv: list[str]) -> Config:
     parser.add_argument("--verbose", action="store_true", help="Afficher les erreurs internes détaillées")
     parser.add_argument("--fast", action="store_true", help="Mode ultra-rapide (1 scroll, 1 expand, délais minimaux)")
     parser.add_argument("--no-stealth", action="store_true", help="Désactiver le mode furtif anti-détection")
+    parser.add_argument("--analyze", action="store_true", help="Générer une analyse Debuk en Markdown après l'extraction")
+    parser.add_argument("--analysis-output", help="Chemin de sortie du rapport Markdown")
+    parser.add_argument("--analysis-model", help="Modèle OpenAI-compatible pour le rapport final")
+    parser.add_argument("--research-model", help="Modèle OpenAI-compatible pour préparer les requêtes factuelles")
+    parser.add_argument("--no-search", action="store_true", help="Désactive DDGS et génère une analyse sans vérification web")
     args = parser.parse_args(argv)
 
     root_url = normalize_x_url(args.url)
     output_path = Path(args.output) if args.output else build_output_path(DEFAULT_OUTPUT_DIR, root_url)
+    analysis_output_path = Path(args.analysis_output) if args.analysis_output else build_analysis_output_path(output_path)
 
     config = Config(
         root_url=root_url,
@@ -197,6 +215,11 @@ def parse_args(argv: list[str]) -> Config:
         verbose=args.verbose,
         fast_mode=args.fast,
         stealth_mode=not args.no_stealth,
+        analyze=args.analyze,
+        analysis_output_path=analysis_output_path,
+        analysis_model=args.analysis_model,
+        research_model=args.research_model,
+        use_search=not args.no_search,
     )
 
     # Mode fast: réduction drastique des délais
@@ -551,8 +574,11 @@ def scrape_branch(page, url: str, depth: int, config: Config, state: ScrapeState
 
 def build_output_payload(
     root_url: str, root_data: dict, replies: list[dict],
-    state: ScrapeState, config: Config, elapsed: float,
+    state: ScrapeState, config: Config, elapsed: Optional[float] = None,
+    elapsed_seconds: Optional[float] = None,
 ) -> dict:
+    if elapsed is None:
+        elapsed = elapsed_seconds if elapsed_seconds is not None else 0.0
     return {
         "meta": {
             "url_racine": root_url,
@@ -597,6 +623,8 @@ def ensure_runtime_paths(config: Config):
     config.profile_dir.mkdir(parents=True, exist_ok=True)
     if config.output_path:
         config.output_path.parent.mkdir(parents=True, exist_ok=True)
+    if config.analyze and config.analysis_output_path:
+        config.analysis_output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -616,12 +644,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     started_at = time.time()
 
     print(f"{'═' * 60}")
-    print(f"🚀 X Thread Extractor v2.1.0 (Stealth Mode)")
+    print(f"🚀 X Thread Extractor v2.2.0 (Stealth Mode)")
     print(f"{'═' * 60}")
     print(f"URL racine      : {config.root_url}")
     print(f"Profondeur max  : {config.max_depth}")
     print(f"Mode fast       : {'✓' if config.fast_mode else '✗'}")
     print(f"Mode stealth    : {'✓' if config.stealth_mode else '✗'}")
+    print(f"Analyse Debuk   : {'✓' if config.analyze else '✗'}")
     print(f"Scroll passes   : {config.scroll_passes}")
     print(f"Expand passes   : {config.expand_passes}")
     print(f"{'═' * 60}\n")
@@ -756,10 +785,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     with config.output_path.open("w", encoding="utf-8") as handle:
         json.dump(output, handle, ensure_ascii=False, indent=2)
 
-    # Nettoyage du fichier partiel
+    # Nettoyage du fichier partiel dès que l'extraction JSON finale existe.
     partial_path = config.output_path.with_suffix(".partial.json")
     if partial_path.exists():
         partial_path.unlink()
+
+    analysis_result = None
+    if config.analyze:
+        try:
+            settings = load_analysis_settings()
+            if config.analysis_model:
+                settings.analysis_model = config.analysis_model
+            if config.research_model:
+                settings.research_model = config.research_model
+            analysis_result = generate_analysis_report(
+                output,
+                settings,
+                config.analysis_output_path or build_analysis_output_path(config.output_path),
+                use_search=config.use_search,
+            )
+        except RuntimeError as exc:
+            print(f"Erreur analyse: {exc}")
+            return 1
 
     print(f"\n{'═' * 60}")
     print(f"✓ Extraction terminée en {elapsed / 60:.1f} min ({elapsed:.1f}s)")
@@ -769,6 +816,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"  Erreurs               : {state.stats.errors}")
     print(f"  Rechargements évités  : {state.stats.page_reloads_saved} (optimisation)")
     print(f"  Fichier               : {config.output_path}")
+    if analysis_result:
+        print(f"  Analyse Markdown      : {analysis_result['output_path']}")
     print(f"{'═' * 60}")
     return 0
 

@@ -2,6 +2,37 @@
 
 All notable changes to X Thread Extractor will be documented in this file.
 
+## [2.2.0] - 2026-05-01
+
+### 🤖 Debuk Analysis Mode
+
+#### Added
+- Optional `--analyze` mode to generate a Markdown debate analysis after thread extraction
+- `.env`-driven configuration for any OpenAI-compatible API
+- Support for configurable `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_ANALYSIS_MODEL`, and `OPENAI_RESEARCH_MODEL`
+- New `thread_analysis.py` module for LLM orchestration, fact-check query planning, and report generation
+- `ddgs` integration for web search and source extraction before final analysis
+- `.env.example` with RouterLab-compatible defaults
+- CLI flags:
+  - `--analyze`
+  - `--analysis-output`
+  - `--analysis-model`
+  - `--research-model`
+  - `--no-search`
+
+#### Changed
+- `build_output_payload()` now accepts `elapsed_seconds` as a backward-compatible keyword alias for tests
+- README updated with `.env` setup and analysis workflow
+- Requirements now include `ddgs` and `python-dotenv`
+- Documentation now recommends reproducing older behavior with CLI flags instead of a duplicate backup script
+
+#### Output
+- JSON extraction output remains unchanged
+- New optional Markdown report output: `*.analysis.md`
+
+#### Removed
+- `x_thread_extractor_backup.py`, replaced by documented runtime flags and Git history
+
 ## [2.1.0] - 2026-05-01
 
 ### 🥷 Anti-Detection & Stealth Mode
@@ -129,10 +160,6 @@ If you still encounter frequent blocking despite stealth mode, consider migratin
 ### Migration Guide
 If you need the old behavior (slower but more exhaustive):
 ```bash
-# Use the backup file
-python x_thread_extractor_backup.py URL
-
-# Or adjust parameters to match old behavior
 python x_thread_extractor.py URL \
   --nav-wait 2.5 \
   --scroll-passes 8 \
