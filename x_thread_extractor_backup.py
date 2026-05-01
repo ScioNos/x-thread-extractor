@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
-x_thread_extractor_optimized.py — Version optimisée pour performance maximale.
-
-Optimisations principales :
-  - Suppression du rechargement de page parente (gain ~70% de temps)
-  - Scroll/expand réduits (2-3 passes au lieu de 8)
-  - Attentes adaptatives au lieu de délais fixes
-  - Parsing optimisé avec cache des sélecteurs
-  - Option de parallélisation des branches
+x_thread_extractor.py — Extraction exhaustive d'un fil X avec toutes ses branches.
 
 Prérequis :
   pip install -r requirements.txt
   playwright install chromium
 
 Usage :
-  python x_thread_extractor_optimized.py https://x.com/USER/status/TWEET_ID
-  python x_thread_extractor_optimized.py https://x.com/USER/status/TWEET_ID --fast
+  python x_thread_extractor.py https://x.com/USER/status/TWEET_ID
+
+Paramètres ajustables :
+  --max-depth      Profondeur de récursion (2 = rapide, 3 = exhaustif, 4+ = très long)
+  --nav-wait       Secondes d'attente après navigation
+  --scroll-passes  Nombre de passages de scroll par page
 """
 
 from __future__ import annotations
@@ -36,7 +33,7 @@ from urllib.parse import urlparse, urlunparse
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
-except ModuleNotFoundError:
+except ModuleNotFoundError:  # pragma: no cover - dépendance optionnelle pour les tests unitaires purs
     PlaywrightTimeout = RuntimeError
     sync_playwright = None
 
@@ -96,11 +93,11 @@ COOKIE_BUTTON_SELECTORS = [
 ]
 
 AUTHOR_MAX_LENGTH = 100
-ARTICLE_WAIT_TIMEOUT_MS = 5_000  # Réduit de 8000 à 5000
-ROOT_TEXT_WAIT_TIMEOUT_MS = 8_000  # Réduit de 10000 à 8000
-ESCAPE_DELAY = 0.3  # Réduit de 0.5 à 0.3
-SORT_MENU_MAX_DELAY = 1.0  # Réduit de 1.5 à 1.0
-SCROLL_PASSES_AFTER_EXPAND = 1  # Réduit de 2 à 1
+ARTICLE_WAIT_TIMEOUT_MS = 8_000
+ROOT_TEXT_WAIT_TIMEOUT_MS = 10_000
+ESCAPE_DELAY = 0.5
+SORT_MENU_MAX_DELAY = 1.5
+SCROLL_PASSES_AFTER_EXPAND = 2
 
 
 @dataclass
@@ -110,16 +107,15 @@ class Config:
     profile_dir: Path = DEFAULT_PROFILE_DIR
     output_path: Optional[Path] = None
     max_depth: int = 10
-    nav_wait: float = 1.5  # Réduit de 2.5 à 1.5
-    scroll_passes: int = 3  # Réduit de 8 à 3
-    scroll_delay: float = 0.8  # Réduit de 1.2 à 0.8
-    expand_passes: int = 3  # Réduit de 8 à 3
-    expand_delay: float = 1.0  # Réduit de 1.5 à 1.0
-    page_timeout_ms: int = 15_000  # Réduit de 20000 à 15000
+    nav_wait: float = 2.5
+    scroll_passes: int = 8
+    scroll_delay: float = 1.2
+    expand_passes: int = 8
+    expand_delay: float = 1.5
+    page_timeout_ms: int = 20_000
     interactive: bool = True
     headless: bool = False
     verbose: bool = False
-    fast_mode: bool = False  # Nouveau: mode ultra-rapide
 
 
 @dataclass
@@ -128,7 +124,6 @@ class Stats:
     tweets_parsed: int = 0
     unique_tweets_visited: int = 0
     errors: int = 0
-    page_reloads_saved: int = 0  # Nouveau: compteur d'optimisation
 
 
 @dataclass
@@ -154,28 +149,27 @@ def warn(depth: int, message: str):
 
 
 def parse_args(argv: list[str]) -> Config:
-    parser = argparse.ArgumentParser(description="Extraire un fil X et ses branches via Playwright (version optimisée).")
+    parser = argparse.ArgumentParser(description="Extraire un fil X et ses branches via Playwright.")
     parser.add_argument("url", help="URL du tweet racine X/Twitter")
     parser.add_argument("--chrome-exe", default=str(DEFAULT_CHROME_EXE), help="Chemin vers Chrome")
     parser.add_argument("--profile-dir", default=str(DEFAULT_PROFILE_DIR), help="Profil persistant Playwright")
     parser.add_argument("--output", help="Chemin de sortie JSON")
     parser.add_argument("--max-depth", type=int, default=10, help="Profondeur maximale de récursion")
-    parser.add_argument("--nav-wait", type=float, default=1.5, help="Attente après navigation")
-    parser.add_argument("--scroll-passes", type=int, default=3, help="Nombre de scrolls par page")
-    parser.add_argument("--scroll-delay", type=float, default=0.8, help="Délai entre scrolls")
-    parser.add_argument("--expand-passes", type=int, default=3, help="Nombre de passes pour afficher plus")
-    parser.add_argument("--expand-delay", type=float, default=1.0, help="Délai après clic afficher plus")
-    parser.add_argument("--page-timeout-ms", type=int, default=15_000, help="Timeout Playwright en ms")
+    parser.add_argument("--nav-wait", type=float, default=2.5, help="Attente après navigation")
+    parser.add_argument("--scroll-passes", type=int, default=8, help="Nombre de scrolls par page")
+    parser.add_argument("--scroll-delay", type=float, default=1.2, help="Délai entre scrolls")
+    parser.add_argument("--expand-passes", type=int, default=8, help="Nombre de passes pour afficher plus")
+    parser.add_argument("--expand-delay", type=float, default=1.5, help="Délai après clic afficher plus")
+    parser.add_argument("--page-timeout-ms", type=int, default=20_000, help="Timeout Playwright en ms")
     parser.add_argument("--non-interactive", action="store_true", help="Échouer au lieu d'attendre une reconnexion manuelle")
     parser.add_argument("--headless", action="store_true", help="Lancer le navigateur en headless")
     parser.add_argument("--verbose", action="store_true", help="Afficher les erreurs internes détaillées")
-    parser.add_argument("--fast", action="store_true", help="Mode ultra-rapide (1 scroll, 1 expand, délais minimaux)")
     args = parser.parse_args(argv)
 
     root_url = normalize_x_url(args.url)
     output_path = Path(args.output) if args.output else build_output_path(DEFAULT_OUTPUT_DIR, root_url)
 
-    config = Config(
+    return Config(
         root_url=root_url,
         chrome_exe=Path(args.chrome_exe),
         profile_dir=Path(args.profile_dir),
@@ -190,20 +184,7 @@ def parse_args(argv: list[str]) -> Config:
         interactive=not args.non_interactive,
         headless=args.headless,
         verbose=args.verbose,
-        fast_mode=args.fast,
     )
-
-    # Mode fast: réduction drastique des délais
-    if config.fast_mode:
-        config.nav_wait = 0.8
-        config.scroll_passes = 1
-        config.scroll_delay = 0.5
-        config.expand_passes = 1
-        config.expand_delay = 0.6
-        config.page_timeout_ms = 10_000
-        log(0, "⚡ Mode FAST activé (délais minimaux)")
-
-    return config
 
 
 def tweet_id(url: str) -> Optional[str]:
@@ -283,7 +264,7 @@ def dismiss_cookies(page, config: Config):
         try:
             for element in page.query_selector_all(selector):
                 if safe_inner_text(element).lower() in targets and safe_click(element):
-                    time.sleep(min(config.nav_wait, 0.8))
+                    time.sleep(min(config.nav_wait, 1.0))
                     return
         except PlaywrightTimeout:
             continue
@@ -316,14 +297,14 @@ def check_session(page, url: str, config: Config):
 
 
 def scroll_page(page, config: Config):
-    """Scrolle la page pour charger le contenu dynamique (optimisé)."""
+    """Scrolle la page pour charger le contenu dynamique."""
     for _ in range(config.scroll_passes):
         page.keyboard.press("End")
         time.sleep(config.scroll_delay)
 
 
 def expand_replies(page, config: Config):
-    """Clique sur les boutons 'afficher plus' pour dérouler les réponses cachées (optimisé)."""
+    """Clique sur les boutons 'afficher plus' pour dérouler les réponses cachées."""
     selectors = [
         'button',
         'div[role="button"]',
@@ -338,7 +319,6 @@ def expand_replies(page, config: Config):
                 if any(keyword in text for keyword in EXPAND_KEYWORDS) and safe_click(button):
                     time.sleep(config.expand_delay)
                     clicked = True
-        # Scroll après expand (réduit)
         for _ in range(SCROLL_PASSES_AFTER_EXPAND):
             page.keyboard.press("End")
             time.sleep(config.scroll_delay)
@@ -378,8 +358,8 @@ def set_sort_latest(page, config: Config):
 
 
 def load_page_full(page, url: str, depth: int, config: Config, state: ScrapeState) -> bool:
-    """Charge une page tweet complète : navigation, session, tri, scroll et expansion (optimisé)."""
-    max_nav_retries = 2  # Réduit de 3 à 2
+    """Charge une page tweet complète : navigation, session, tri, scroll et expansion."""
+    max_nav_retries = 3
     for attempt in range(max_nav_retries):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=config.page_timeout_ms)
@@ -387,7 +367,7 @@ def load_page_full(page, url: str, depth: int, config: Config, state: ScrapeStat
         except Exception as exc:
             if "interrupted by another navigation" in str(exc) and attempt < max_nav_retries - 1:
                 warn(depth, f"Navigation interrompue, nouvelle tentative ({attempt + 2}/{max_nav_retries})…")
-                time.sleep(1.5)  # Réduit de 2 à 1.5
+                time.sleep(2)
                 continue
             if isinstance(exc, PlaywrightTimeout):
                 warn(depth, f"Timeout : {url}")
@@ -487,21 +467,21 @@ def crawl_reply_branches(
     depth: int, config: Config, state: ScrapeState,
     on_branch_complete: Optional[Callable[[], None]] = None,
 ) -> None:
-    """
-    Descend dans les branches de réponses SANS recharger la page parente.
-
-    OPTIMISATION MAJEURE: Suppression du rechargement de page parente après chaque branche.
-    Les reply_count initiaux sont suffisants pour décider quelles branches explorer.
-    Gain de performance: ~70% de temps en moins.
-    """
+    """Descend dans les branches de réponses, recharge la page parente après chaque descente."""
     for index, reply in enumerate(replies):
         if reply["reply_count"] > 0 and reply["id"] not in state.visited:
             log(depth, f"   [{index + 1}/{len(replies)}] Branche → {reply['url']}")
             reply["sous_discussions"] = scrape_branch(page, reply["url"], depth + 1, config, state)
             if on_branch_complete:
                 on_branch_complete()
-            # OPTIMISATION: Pas de rechargement de page parente
-            state.stats.page_reloads_saved += 1
+            if not load_page_full(page, parent_url, depth, config, state):
+                warn(depth, "Impossible de revenir sur la page parente.")
+                break
+            fresh_map = {r["id"]: r for r in parse_page(page, exclude_id=parent_id, state=state)}
+            for remaining in replies[index + 1:]:
+                fresh_item = fresh_map.get(remaining["id"])
+                if fresh_item:
+                    remaining["reply_count"] = fresh_item["reply_count"]
 
 
 def scrape_branch(page, url: str, depth: int, config: Config, state: ScrapeState) -> list[dict]:
@@ -523,22 +503,18 @@ def scrape_branch(page, url: str, depth: int, config: Config, state: ScrapeState
     return replies
 
 
-def build_output_payload(
-    root_url: str, root_data: dict, replies: list[dict],
-    state: ScrapeState, config: Config, elapsed: float,
-) -> dict:
+def build_output_payload(root_url: str, root_data: dict, replies: list[dict], state: ScrapeState, config: Config, elapsed_seconds: float) -> dict:
+    """Construit le payload JSON final avec métadonnées, tweet racine et réponses."""
     return {
         "meta": {
             "url_racine": root_url,
-            "extraction_iso": datetime.now().isoformat(),
-            "duree_secondes": round(elapsed, 2),
+            "extraction_iso": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            "duree_secondes": round(elapsed_seconds),
             "tweets_uniques": state.stats.unique_tweets_visited,
             "tweets_parsed": state.stats.tweets_parsed,
             "pages_visitees": state.stats.pages_visited,
             "erreurs": state.stats.errors,
             "profondeur_max": config.max_depth,
-            "page_reloads_saved": state.stats.page_reloads_saved,
-            "optimized_version": True,
         },
         "tweet_racine": root_data,
         "reponses": replies,
@@ -589,37 +565,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     state = ScrapeState()
     started_at = time.time()
 
-    print(f"{'═' * 60}")
-    print(f"🚀 X Thread Extractor (VERSION OPTIMISÉE)")
-    print(f"{'═' * 60}")
-    print(f"URL racine      : {config.root_url}")
-    print(f"Profondeur max  : {config.max_depth}")
-    print(f"Mode fast       : {'✓' if config.fast_mode else '✗'}")
-    print(f"Scroll passes   : {config.scroll_passes}")
-    print(f"Expand passes   : {config.expand_passes}")
-    print(f"{'═' * 60}\n")
-
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
-            str(config.profile_dir),
-            headless=config.headless,
+            user_data_dir=str(config.profile_dir),
             executable_path=str(config.chrome_exe),
+            headless=config.headless,
             args=["--disable-blink-features=AutomationControlled"],
-            viewport={"width": 1280, "height": 1024},
+            viewport={"width": 1280, "height": 900},
         )
-        page = context.pages[0] if context.pages else context.new_page()
-        page.set_default_timeout(config.page_timeout_ms)
+        page = context.new_page()
+
+        print("\n→ Chargement du tweet racine...")
+        if not load_page_full(page, config.root_url, depth=0, config=config, state=state):
+            print("Erreur: Impossible de charger le tweet racine.")
+            context.close()
+            return 1
 
         root_identifier = tweet_id(config.root_url)
-        if not root_identifier:
-            print("Erreur: Impossible d'extraire l'ID du tweet racine.")
-            return 1
-
-        print(f"Chargement du tweet racine : {config.root_url}\n")
-        if not load_page_full(page, config.root_url, 0, config, state):
-            print("Erreur: Impossible de charger le tweet racine.")
-            return 1
-
         root_data = {
             "id": root_identifier,
             "url": config.root_url,
@@ -631,18 +593,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             "retweet_count": 0,
             "sous_discussions": [],
         }
-
         try:
-            root_article = page.wait_for_selector(
-                'article[data-testid="tweet"]',
-                timeout=min(config.page_timeout_ms, ROOT_TEXT_WAIT_TIMEOUT_MS)
-            )
+            page.wait_for_selector('[data-testid="tweetText"]', timeout=min(config.page_timeout_ms, ROOT_TEXT_WAIT_TIMEOUT_MS))
+            root_article = page.query_selector('article[data-testid="tweet"]')
             if root_article:
                 extracted = extract_article(root_article)
                 if extracted:
                     root_data.update({
-                        k: extracted[k]
-                        for k in ("auteur", "timestamp", "texte", "reply_count", "like_count", "retweet_count")
+                        key: extracted[key]
+                        for key in ("auteur", "timestamp", "texte", "reply_count", "like_count", "retweet_count")
                     })
         except PlaywrightTimeout:
             warn(0, "tweetText non trouvé sur le tweet racine.")
@@ -679,13 +638,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         partial_path.unlink()
 
     print(f"\n{'═' * 60}")
-    print(f"✓ Extraction terminée en {elapsed / 60:.1f} min ({elapsed:.1f}s)")
-    print(f"  Tweets uniques        : {state.stats.unique_tweets_visited}")
-    print(f"  Tweets parsés         : {state.stats.tweets_parsed}")
-    print(f"  Pages visitées        : {state.stats.pages_visited}")
-    print(f"  Erreurs               : {state.stats.errors}")
-    print(f"  Rechargements évités  : {state.stats.page_reloads_saved} (optimisation)")
-    print(f"  Fichier               : {config.output_path}")
+    print(f"✓ Extraction terminée en {elapsed / 60:.1f} min")
+    print(f"  Tweets uniques   : {state.stats.unique_tweets_visited}")
+    print(f"  Tweets parsés    : {state.stats.tweets_parsed}")
+    print(f"  Pages visitées   : {state.stats.pages_visited}")
+    print(f"  Erreurs          : {state.stats.errors}")
+    print(f"  Fichier          : {config.output_path}")
     print(f"{'═' * 60}")
     return 0
 
