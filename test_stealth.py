@@ -5,14 +5,13 @@ Visite des sites de détection de bots et affiche les résultats.
 """
 
 import sys
+import unittest
 from pathlib import Path
 
 try:
     from playwright.sync_api import sync_playwright
 except ModuleNotFoundError:
-    print("Erreur: Playwright n'est pas installé.")
-    print("Lance: pip install playwright && playwright install chromium")
-    sys.exit(1)
+    sync_playwright = None
 
 
 def test_stealth_mode():
@@ -145,5 +144,15 @@ def test_stealth_mode():
     print("=" * 70)
 
 
+class StealthModeTest(unittest.TestCase):
+    @unittest.skipIf(sync_playwright is None, "Playwright n'est pas installé")
+    def test_stealth_mode_manual(self):
+        test_stealth_mode()
+
+
 if __name__ == "__main__":
+    if sync_playwright is None:
+        print("Erreur: Playwright n'est pas installé.")
+        print("Lance: pip install playwright && playwright install chromium")
+        raise SystemExit(1)
     test_stealth_mode()

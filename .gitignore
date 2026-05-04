@@ -14,3 +14,8 @@ AGENTS.md
 CLAUDE.md
 !requirements.txt
 !README.md
+
+.a0proj/secrets.env
+.a0proj/variables.env
+*.partial.json
+*.analysis.md

@@ -2,6 +2,35 @@
 
 All notable changes to X Thread Extractor will be documented in this file.
 
+## [2.2.1] - 2026-05-04
+
+### 🛡️ Robustness, Guardrails & Portable Tests
+
+#### Fixed
+- Fixed Linux/macOS portability issue in unit tests caused by the hardcoded `C:\tmp` temporary directory.
+- Fixed `test_stealth.py` so missing Playwright no longer breaks unittest discovery at import time.
+- Added clean unittest skip behavior for the stealth test when Playwright is unavailable.
+
+#### Added
+- Added global crawl guardrails to avoid uncontrolled extraction runs:
+  - `--max-pages` with default `200`
+  - `--max-tweets` with default `1000`
+  - `--crawl-timeout-s` with default `1800`
+- Added extraction metadata for guarded exits:
+  - `stopped_by_limit`
+  - `stop_reason`
+
+#### Improved
+- Improved Debuk analysis robustness with retry/fallback behavior around LLM calls.
+- Improved fact-check query planning fallback when the research model returns invalid or unusable JSON.
+- Improved DDGS failure handling so analysis can continue in degraded mode when search is unavailable.
+- Hardened `.gitignore` for sensitive and generated files: `.a0proj/secrets.env`, `.a0proj/variables.env`, `*.partial.json`, `*.analysis.md`.
+
+#### Testing
+- `python -m py_compile x_thread_extractor.py thread_analysis.py test_stealth.py tests/*.py` passes.
+- `python -m unittest discover -s tests -v` passes with 37 tests.
+- `python -m unittest test_stealth -v` now reports a clean skip when Playwright is not installed.
+
 ## [2.2.0] - 2026-05-01
 
 ### 🤖 Debuk Analysis Mode

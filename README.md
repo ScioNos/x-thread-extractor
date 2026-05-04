@@ -2,9 +2,9 @@
 
 Outil Python local pour extraire un tweet X/Twitter et ses branches de réponses via Playwright.
 
-**Version 2.2.0** — Mode stealth anti-détection + optimisations de performance + analyse Debuk via API OpenAI-compatible.
+**Version 2.2.1** — Mode stealth anti-détection + optimisations de performance + analyse Debuk via API OpenAI-compatible + garde-fous de crawl.
 
-**Nouveau** : Mode stealth activé par défaut pour contourner les systèmes anti-bot.
+**Nouveau v2.2.1** : garde-fous de crawl, tests portables et analyse Debuk plus robuste. Mode stealth toujours activé par défaut.
 
 ## Installation
 ```bash
@@ -84,6 +84,9 @@ python x_thread_extractor.py <url> --fast --headless --non-interactive
 
 # Désactiver le mode stealth (non recommandé)
 python x_thread_extractor.py <url> --no-stealth
+
+# Extraction bornée pour éviter les runs trop longs
+python x_thread_extractor.py <url> --max-pages 50 --max-tweets 300 --crawl-timeout-s 900
 ```
 
 ## Options
@@ -93,6 +96,9 @@ python x_thread_extractor.py <url> --no-stealth
 | `--fast` | **Mode ultra-rapide** (1 scroll, 1 expand, délais minimaux) | Désactivé |
 | `--no-stealth` | **Désactive le mode furtif** anti-détection | Activé |
 | `--max-depth N` | Profondeur de récursion | 10 |
+| `--max-pages N` | Nombre maximal de pages tweet à visiter avant arrêt propre | 200 |
+| `--max-tweets N` | Nombre maximal de tweets à collecter/parser avant arrêt propre | 1000 |
+| `--crawl-timeout-s N` | Timeout global du crawl en secondes | 1800 |
 | `--output FILE` | Chemin de sortie JSON | Auto-généré |
 | `--non-interactive` | Échoue si la session est expirée au lieu d'attendre | Désactivé |
 | `--headless` | Lance le navigateur sans fenêtre visible | Désactivé |
@@ -134,6 +140,13 @@ Ce script ouvre un navigateur avec le mode stealth et te permet de tester sur de
 📖 **Documentation complète** : Voir [STEALTH_FEATURES.md](STEALTH_FEATURES.md) pour tous les détails techniques.
 
 ## Comportement
+
+### Nouveautés v2.2.1
+- **Garde-fous de crawl** : arrêt propre via `--max-pages`, `--max-tweets` et `--crawl-timeout-s`
+- **Métadonnées d'arrêt** : ajout de `stopped_by_limit` et `stop_reason` dans la sortie JSON
+- **Tests portables** : suppression du chemin Windows hardcodé dans les tests unitaires
+- **Test stealth robuste** : Playwright manquant déclenche maintenant un skip `unittest` propre
+- **Analyse Debuk plus tolérante** : fallbacks en cas d'erreur LLM, JSON invalide ou DDGS indisponible
 
 ### Nouveautés v2.2.0
 - **Analyse Debuk optionnelle** : génération d'un rapport Markdown via API OpenAI-compatible
@@ -179,7 +192,9 @@ Par défaut, la sortie est générée dans le dossier du script avec un nom de t
     "erreurs": 2,
     "profondeur_max": 10,
     "page_reloads_saved": 75,
-    "optimized_version": true
+    "optimized_version": true,
+    "stopped_by_limit": false,
+    "stop_reason": ""
   },
   "tweet_racine": { ... },
   "reponses": [ ... ]
@@ -205,6 +220,8 @@ Par défaut, la sortie est générée dans le dossier du script avec un nom de t
 - L'outil dépend fortement de l'interface de X/Twitter, donc il peut casser si le DOM change
 - Le mode `--non-interactive` échoue explicitement si la session est expirée
 - **Mode stealth** : Réduit la détectabilité mais ne garantit pas l'invisibilité totale face aux systèmes anti-bot avancés
+- Les fichiers `.env`, `chromium_profile/`, `*.partial.json`, `*.analysis.md` et les secrets `.a0proj/` ne doivent pas être commités
+- Les garde-fous `--max-pages`, `--max-tweets` et `--crawl-timeout-s` limitent les extractions trop longues, mais ne garantissent pas l'exhaustivité
 - Ce projet est prévu pour un usage local expérimental, pas comme collecteur de production robuste
 - ⚠️ **Légalité** : Le scraping de X/Twitter peut violer leurs conditions d'utilisation. Utilise cet outil de manière responsable.
 
@@ -236,6 +253,7 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour tous les détails.
 
 ## Historique des Versions
 
+- **v2.2.1** (2026-05-04) : Garde-fous de crawl, tests portables, robustesse LLM/DDGS
 - **v2.2.0** (2026-05-01) : Analyse Debuk, config `.env`, API OpenAI-compatible, recherche DDGS
 - **v2.1.0** (2026-05-01) : Mode stealth anti-détection, délais aléatoires, masquage WebDriver
 - **v2.0.0** (2026-05-01) : Optimisations majeures de performance (70-85% plus rapide)
@@ -244,5 +262,9 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour tous les détails.
 ## Tests
 ```bash
 conda activate test
-python -m unittest discover -s tests
+python -m py_compile x_thread_extractor.py thread_analysis.py test_stealth.py tests/*.py
+python -m unittest discover -s tests -v
+python -m unittest test_stealth -v
 ```
+
+Sans Playwright installé, `test_stealth.py` est ignoré proprement par `unittest`.

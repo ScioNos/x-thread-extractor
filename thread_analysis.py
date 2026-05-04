@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -236,14 +237,25 @@ def _call_chat_completion(
         "Authorization": f"Bearer {api_key}",
     }
     req = request.Request(endpoint, data=body, headers=headers, method="POST")
-    try:
-        with request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Erreur HTTP LLM {exc.code} sur {endpoint}: {details}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"Impossible de joindre l'API LLM {endpoint}: {exc.reason}") from exc
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Erreur HTTP LLM {exc.code} sur {endpoint}: {details}") from exc
+        except error.URLError as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"Impossible de joindre l'API LLM {endpoint}: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Réponse LLM non JSON sur {endpoint}: {exc}") from exc
+    else:
+        raise RuntimeError(f"Impossible de joindre l'API LLM {endpoint}: {last_error}")
 
     choices = data.get("choices") or []
     if not choices:
@@ -307,15 +319,18 @@ def build_fallback_queries(payload: Mapping[str, Any]) -> list[dict[str, str]]:
 
 def request_fact_check_queries(payload: Mapping[str, Any], settings: AnalysisSettings) -> list[dict[str, str]]:
     thread_context = build_thread_context(payload, max_tweets=80, max_chars=12000)
-    raw = _call_chat_completion(
-        base_url=settings.base_url,
-        api_key=settings.api_key,
-        model=settings.research_model,
-        messages=_build_query_planner_messages(thread_context, settings),
-        timeout=settings.request_timeout,
-        temperature=0.0,
-    )
-    parsed = extract_json_payload(raw)
+    try:
+        raw = _call_chat_completion(
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+            model=settings.research_model,
+            messages=_build_query_planner_messages(thread_context, settings),
+            timeout=settings.request_timeout,
+            temperature=0.0,
+        )
+        parsed = extract_json_payload(raw)
+    except Exception:
+        return build_fallback_queries(payload)
     queries = parsed.get("queries", []) if isinstance(parsed, dict) else []
     normalized: list[dict[str, str]] = []
     for item in queries:
@@ -350,9 +365,15 @@ def run_fact_check_searches(
     *,
     include_extracts: bool = True,
 ) -> list[dict[str, Any]]:
-    ensure_ddgs_available()
+    try:
+        ensure_ddgs_available()
+    except RuntimeError as exc:
+        return [{"claim": item.get("claim", ""), "query": item.get("query", ""), "why": item.get("why", ""), "error": str(exc), "sources": []} for item in queries]
     bundles: list[dict[str, Any]] = []
-    search_client = DDGS(timeout=int(settings.request_timeout))
+    try:
+        search_client = DDGS(timeout=int(settings.request_timeout))
+    except Exception as exc:
+        return [{"claim": item.get("claim", ""), "query": item.get("query", ""), "why": item.get("why", ""), "error": str(exc), "sources": []} for item in queries]
     for item in queries:
         try:
             results = search_client.text(
@@ -469,8 +490,11 @@ def generate_analysis_report(
     searches: list[dict[str, Any]] = []
     queries: list[dict[str, str]] = []
     if use_search:
-        queries = request_fact_check_queries(payload, settings)
-        searches = run_fact_check_searches(queries, settings)
+        try:
+            queries = request_fact_check_queries(payload, settings)
+            searches = run_fact_check_searches(queries, settings)
+        except Exception as exc:
+            searches = [{"claim": "Recherche web", "query": "", "why": "Mode dégradé", "error": str(exc), "sources": []}]
     messages = build_analysis_messages(payload, settings, searches)
     report = _call_chat_completion(
         base_url=settings.base_url,

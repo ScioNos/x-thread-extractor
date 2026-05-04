@@ -136,6 +136,9 @@ class Config:
     analysis_model: Optional[str] = None
     research_model: Optional[str] = None
     use_search: bool = True
+    max_pages: int = 200
+    max_tweets: int = 1000
+    crawl_timeout_s: float = 1800.0
 
 
 @dataclass
@@ -145,12 +148,34 @@ class Stats:
     unique_tweets_visited: int = 0
     errors: int = 0
     page_reloads_saved: int = 0  # Nouveau: compteur d'optimisation
+    stopped_by_limit: bool = False
+    stop_reason: str = ""
 
 
 @dataclass
 class ScrapeState:
     visited: set[str] = field(default_factory=set)
     stats: Stats = field(default_factory=Stats)
+    started_at: float = field(default_factory=time.time)
+
+    def should_stop(self, config: Config) -> bool:
+        if self.stats.stopped_by_limit:
+            return True
+        if config.max_pages and self.stats.pages_visited >= config.max_pages:
+            self.stop(f"limite de pages atteinte ({config.max_pages})")
+            return True
+        if config.max_tweets and self.stats.unique_tweets_visited >= config.max_tweets:
+            self.stop(f"limite de tweets atteinte ({config.max_tweets})")
+            return True
+        if config.crawl_timeout_s and time.time() - self.started_at >= config.crawl_timeout_s:
+            self.stop(f"timeout global atteint ({config.crawl_timeout_s:.0f}s)")
+            return True
+        return False
+
+    def stop(self, reason: str) -> None:
+        self.stats.stopped_by_limit = True
+        if not self.stats.stop_reason:
+            self.stats.stop_reason = reason
 
     def mark_visited(self, tweet_identifier: str) -> bool:
         if tweet_identifier in self.visited:
@@ -192,6 +217,9 @@ def parse_args(argv: list[str]) -> Config:
     parser.add_argument("--analysis-model", help="Modèle OpenAI-compatible pour le rapport final")
     parser.add_argument("--research-model", help="Modèle OpenAI-compatible pour préparer les requêtes factuelles")
     parser.add_argument("--no-search", action="store_true", help="Désactive DDGS et génère une analyse sans vérification web")
+    parser.add_argument("--max-pages", type=int, default=200, help="Nombre maximal de pages tweet à visiter")
+    parser.add_argument("--max-tweets", type=int, default=1000, help="Nombre maximal de tweets uniques à collecter")
+    parser.add_argument("--crawl-timeout-s", type=float, default=1800.0, help="Timeout global du crawl en secondes")
     args = parser.parse_args(argv)
 
     root_url = normalize_x_url(args.url)
@@ -220,6 +248,9 @@ def parse_args(argv: list[str]) -> Config:
         analysis_model=args.analysis_model,
         research_model=args.research_model,
         use_search=not args.no_search,
+        max_pages=args.max_pages,
+        max_tweets=args.max_tweets,
+        crawl_timeout_s=args.crawl_timeout_s,
     )
 
     # Mode fast: réduction drastique des délais
@@ -344,9 +375,11 @@ def check_session(page, url: str, config: Config):
     dismiss_cookies(page, config)
 
 
-def scroll_page(page, config: Config):
+def scroll_page(page, config: Config, state: Optional[ScrapeState] = None):
     """Scrolle la page pour charger le contenu dynamique (optimisé avec délais aléatoires)."""
     for _ in range(config.scroll_passes):
+        if state and state.should_stop(config):
+            return
         page.keyboard.press("End")
         # Délai aléatoire pour simuler un comportement humain
         if config.stealth_mode:
@@ -356,7 +389,7 @@ def scroll_page(page, config: Config):
             time.sleep(config.scroll_delay)
 
 
-def expand_replies(page, config: Config):
+def expand_replies(page, config: Config, state: Optional[ScrapeState] = None):
     """Clique sur les boutons 'afficher plus' pour dérouler les réponses cachées (optimisé avec délais aléatoires)."""
     selectors = [
         'button',
@@ -365,6 +398,8 @@ def expand_replies(page, config: Config):
         'span[role="button"]',
     ]
     for _ in range(config.expand_passes):
+        if state and state.should_stop(config):
+            return
         clicked = False
         for selector in selectors:
             for button in page.query_selector_all(selector):
@@ -422,6 +457,9 @@ def set_sort_latest(page, config: Config):
 
 def load_page_full(page, url: str, depth: int, config: Config, state: ScrapeState) -> bool:
     """Charge une page tweet complète : navigation, session, tri, scroll et expansion (optimisé)."""
+    if state.should_stop(config):
+        warn(depth, f"Arrêt du crawl: {state.stats.stop_reason}")
+        return False
     max_nav_retries = 2  # Réduit de 3 à 2
     for attempt in range(max_nav_retries):
         try:
@@ -454,8 +492,8 @@ def load_page_full(page, url: str, depth: int, config: Config, state: ScrapeStat
             state.stats.errors += 1
             return False
         set_sort_latest(page, config)
-        scroll_page(page, config)
-        expand_replies(page, config)
+        scroll_page(page, config, state)
+        expand_replies(page, config, state)
         state.stats.pages_visited += 1
         return True
     except PlaywrightTimeout:
@@ -518,16 +556,21 @@ def extract_article(article) -> Optional[dict]:
         return None
 
 
-def parse_page(page, exclude_id: str, state: ScrapeState) -> list[dict]:
+def parse_page(page, exclude_id: str, state: ScrapeState, config: Optional[Config] = None) -> list[dict]:
     """Parse tous les tweets visibles sur la page, dédupliqués, sauf exclude_id."""
     seen: set[str] = set()
     results = []
     for article in page.query_selector_all('article[data-testid="tweet"]'):
+        if config and state.should_stop(config):
+            break
         data = extract_article(article)
         if data and data["id"] != exclude_id and data["id"] not in seen:
             seen.add(data["id"])
             results.append(data)
             state.stats.tweets_parsed += 1
+            if config and config.max_tweets and state.stats.tweets_parsed >= config.max_tweets:
+                state.stop(f"limite de tweets parsés atteinte ({config.max_tweets})")
+                break
     return results
 
 
@@ -544,6 +587,9 @@ def crawl_reply_branches(
     Gain de performance: ~70% de temps en moins.
     """
     for index, reply in enumerate(replies):
+        if state.should_stop(config):
+            warn(depth, f"Arrêt du crawl: {state.stats.stop_reason}")
+            break
         if reply["reply_count"] > 0 and reply["id"] not in state.visited:
             log(depth, f"   [{index + 1}/{len(replies)}] Branche → {reply['url']}")
             reply["sous_discussions"] = scrape_branch(page, reply["url"], depth + 1, config, state)
@@ -558,6 +604,9 @@ def scrape_branch(page, url: str, depth: int, config: Config, state: ScrapeState
     root_identifier = tweet_id(url)
     if not root_identifier:
         return []
+    if state.should_stop(config):
+        warn(depth, f"Arrêt du crawl: {state.stats.stop_reason}")
+        return []
     if not state.mark_visited(root_identifier):
         return []
     if depth > config.max_depth:
@@ -565,7 +614,7 @@ def scrape_branch(page, url: str, depth: int, config: Config, state: ScrapeState
     log(depth, f"[{depth}] → {url}")
     if not load_page_full(page, url, depth, config, state):
         return []
-    replies = parse_page(page, exclude_id=root_identifier, state=state)
+    replies = parse_page(page, exclude_id=root_identifier, state=state, config=config)
     log(depth, f"   {len(replies)} réponse(s) trouvée(s)")
     if depth < config.max_depth:
         crawl_reply_branches(page, url, root_identifier, replies, depth, config, state)
@@ -591,6 +640,8 @@ def build_output_payload(
             "profondeur_max": config.max_depth,
             "page_reloads_saved": state.stats.page_reloads_saved,
             "optimized_version": True,
+            "stopped_by_limit": state.stats.stopped_by_limit,
+            "stop_reason": state.stats.stop_reason,
         },
         "tweet_racine": root_data,
         "reponses": replies,
@@ -642,6 +693,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     state = ScrapeState()
     started_at = time.time()
+    state.started_at = started_at
 
     print(f"{'═' * 60}")
     print(f"🚀 X Thread Extractor v2.2.0 (Stealth Mode)")
@@ -763,7 +815,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"  Texte  : {root_data['texte'][:120]!r}")
 
         state.mark_visited(root_identifier)
-        replies = parse_page(page, exclude_id=root_identifier, state=state)
+        replies = parse_page(page, exclude_id=root_identifier, state=state, config=config)
         print(f"\n  {len(replies)} réponse(s) directe(s) au tweet racine.")
 
         def _save_partial():
@@ -804,9 +856,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config.analysis_output_path or build_analysis_output_path(config.output_path),
                 use_search=config.use_search,
             )
-        except RuntimeError as exc:
+        except Exception as exc:
             print(f"Erreur analyse: {exc}")
-            return 1
+            analysis_result = None
 
     print(f"\n{'═' * 60}")
     print(f"✓ Extraction terminée en {elapsed / 60:.1f} min ({elapsed:.1f}s)")
@@ -814,6 +866,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"  Tweets parsés         : {state.stats.tweets_parsed}")
     print(f"  Pages visitées        : {state.stats.pages_visited}")
     print(f"  Erreurs               : {state.stats.errors}")
+    if state.stats.stopped_by_limit:
+        print(f"  Arrêt anticipé        : {state.stats.stop_reason}")
     print(f"  Rechargements évités  : {state.stats.page_reloads_saved} (optimisation)")
     print(f"  Fichier               : {config.output_path}")
     if analysis_result:
