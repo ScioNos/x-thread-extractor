@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-x_thread_extractor.py — Version 2.2.0 avec mode stealth anti-détection et analyse LLM optionnelle.
+x_thread_extractor.py — Version 2.3.0 avec mode stealth anti-détection, analyse LLM optionnelle et optimisations performance adaptatives.
 
 Optimisations principales :
   - Suppression du rechargement de page parente (gain ~70% de temps)
@@ -111,6 +111,7 @@ ROOT_TEXT_WAIT_TIMEOUT_MS = 8_000  # Réduit de 10000 à 8000
 ESCAPE_DELAY = 0.3  # Réduit de 0.5 à 0.3
 SORT_MENU_MAX_DELAY = 1.0  # Réduit de 1.5 à 1.0
 SCROLL_PASSES_AFTER_EXPAND = 1  # Réduit de 2 à 1
+MAX_EXPAND_CLICKS_PER_PASS = 6
 
 
 @dataclass
@@ -131,6 +132,9 @@ class Config:
     verbose: bool = False
     fast_mode: bool = False  # Nouveau: mode ultra-rapide
     stealth_mode: bool = True  # Nouveau: mode furtif anti-détection
+    sort_latest: bool = True
+    partial_save_every: int = 5
+    partial_save_interval_s: float = 20.0
     analyze: bool = False
     analysis_output_path: Optional[Path] = None
     analysis_model: Optional[str] = None
@@ -212,6 +216,9 @@ def parse_args(argv: list[str]) -> Config:
     parser.add_argument("--verbose", action="store_true", help="Afficher les erreurs internes détaillées")
     parser.add_argument("--fast", action="store_true", help="Mode ultra-rapide (1 scroll, 1 expand, délais minimaux)")
     parser.add_argument("--no-stealth", action="store_true", help="Désactiver le mode furtif anti-détection")
+    parser.add_argument("--no-sort-latest", action="store_true", help="Ne pas tenter de trier les réponses par récence (plus rapide)")
+    parser.add_argument("--partial-save-every", type=int, default=5, help="Sauvegarde partielle toutes les N branches (0 = désactivé)")
+    parser.add_argument("--partial-save-interval-s", type=float, default=20.0, help="Délai minimal entre deux sauvegardes partielles")
     parser.add_argument("--analyze", action="store_true", help="Générer une analyse Debuk en Markdown après l'extraction")
     parser.add_argument("--analysis-output", help="Chemin de sortie du rapport Markdown")
     parser.add_argument("--analysis-model", help="Modèle OpenAI-compatible pour le rapport final")
@@ -243,6 +250,9 @@ def parse_args(argv: list[str]) -> Config:
         verbose=args.verbose,
         fast_mode=args.fast,
         stealth_mode=not args.no_stealth,
+        sort_latest=not args.no_sort_latest,
+        partial_save_every=args.partial_save_every,
+        partial_save_interval_s=args.partial_save_interval_s,
         analyze=args.analyze,
         analysis_output_path=analysis_output_path,
         analysis_model=args.analysis_model,
@@ -255,13 +265,14 @@ def parse_args(argv: list[str]) -> Config:
 
     # Mode fast: réduction drastique des délais
     if config.fast_mode:
-        config.nav_wait = 0.8
+        config.nav_wait = min(config.nav_wait, 0.5)
         config.scroll_passes = 1
-        config.scroll_delay = 0.5
+        config.scroll_delay = min(config.scroll_delay, 0.25)
         config.expand_passes = 1
-        config.expand_delay = 0.6
-        config.page_timeout_ms = 10_000
-        log(0, "⚡ Mode FAST activé (délais minimaux)")
+        config.expand_delay = min(config.expand_delay, 0.3)
+        config.page_timeout_ms = min(config.page_timeout_ms, 8_000)
+        config.sort_latest = False
+        log(0, "⚡ Mode FAST activé (délais minimaux, tri désactivé)")
 
     return config
 
@@ -377,16 +388,25 @@ def check_session(page, url: str, config: Config):
 
 def scroll_page(page, config: Config, state: Optional[ScrapeState] = None):
     """Scrolle la page pour charger le contenu dynamique (optimisé avec délais aléatoires)."""
+    stable_passes = 0
     for _ in range(config.scroll_passes):
         if state and state.should_stop(config):
             return
+        previous_height = page.evaluate("document.body.scrollHeight")
         page.keyboard.press("End")
         # Délai aléatoire pour simuler un comportement humain
         if config.stealth_mode:
             delay = config.scroll_delay + random.uniform(-0.2, 0.3)
-            time.sleep(max(0.3, delay))
+            time.sleep(max(0.2, delay))
         else:
             time.sleep(config.scroll_delay)
+        current_height = page.evaluate("document.body.scrollHeight")
+        if current_height <= previous_height:
+            stable_passes += 1
+            if stable_passes >= 1:
+                break
+        else:
+            stable_passes = 0
 
 
 def expand_replies(page, config: Config, state: Optional[ScrapeState] = None):
@@ -401,27 +421,37 @@ def expand_replies(page, config: Config, state: Optional[ScrapeState] = None):
         if state and state.should_stop(config):
             return
         clicked = False
+        clicks_this_pass = 0
+        previous_articles = len(page.query_selector_all('article[data-testid="tweet"]'))
         for selector in selectors:
             for button in page.query_selector_all(selector):
+                if clicks_this_pass >= MAX_EXPAND_CLICKS_PER_PASS:
+                    break
                 text = safe_inner_text(button).lower()
                 if any(keyword in text for keyword in EXPAND_KEYWORDS) and safe_click(button):
                     # Délai aléatoire pour simuler un comportement humain
                     if config.stealth_mode:
-                        delay = config.expand_delay + random.uniform(-0.3, 0.5)
-                        time.sleep(max(0.5, delay))
+                        delay = config.expand_delay + random.uniform(-0.2, 0.25)
+                        time.sleep(max(0.2, delay))
                     else:
                         time.sleep(config.expand_delay)
                     clicked = True
-        # Scroll après expand (réduit)
+                    clicks_this_pass += 1
+            if clicks_this_pass >= MAX_EXPAND_CLICKS_PER_PASS:
+                break
+        if not clicked:
+            break
+        current_articles = len(page.query_selector_all('article[data-testid="tweet"]'))
+        if current_articles <= previous_articles:
+            break
+        # Scroll après expand uniquement si la page a effectivement progressé.
         for _ in range(SCROLL_PASSES_AFTER_EXPAND):
             page.keyboard.press("End")
             if config.stealth_mode:
-                delay = config.scroll_delay + random.uniform(-0.2, 0.3)
-                time.sleep(max(0.3, delay))
+                delay = config.scroll_delay + random.uniform(-0.1, 0.15)
+                time.sleep(max(0.2, delay))
             else:
                 time.sleep(config.scroll_delay)
-        if not clicked:
-            break
 
 
 def find_first_matching_text(page, selectors: list[str], texts: list[str]):
@@ -437,6 +467,8 @@ def find_first_matching_text(page, selectors: list[str], texts: list[str]):
 
 def set_sort_latest(page, config: Config):
     """Bascule le tri des réponses sur 'Récents' si disponible."""
+    if not config.sort_latest:
+        return
     try:
         toggle = find_first_matching_text(page, SORT_TOGGLE_SELECTORS, SORT_TOGGLE_TEXTS)
         if not toggle:
@@ -446,7 +478,7 @@ def set_sort_latest(page, config: Config):
         time.sleep(min(config.expand_delay, SORT_MENU_MAX_DELAY))
         latest_button = find_first_matching_text(page, SORT_LATEST_SELECTORS, SORT_LATEST_TEXTS)
         if latest_button and safe_click(latest_button):
-            time.sleep(config.nav_wait)
+            time.sleep(min(config.nav_wait, SORT_MENU_MAX_DELAY))
             log(0, "  ✓ Tri → Récents")
             return
         page.keyboard.press("Escape")
@@ -657,8 +689,10 @@ def save_intermediate(
     elapsed = time.time() - started_at
     payload = build_output_payload(root_url, root_data, replies, state, config, elapsed)
     payload["meta"]["statut"] = "partiel"
-    with partial_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    tmp_path = partial_path.with_suffix(partial_path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    tmp_path.replace(partial_path)
     log(0, f"  💾 Sauvegarde intermédiaire → {partial_path.name}")
 
 
@@ -696,7 +730,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     state.started_at = started_at
 
     print(f"{'═' * 60}")
-    print(f"🚀 X Thread Extractor v2.2.0 (Stealth Mode)")
+    print(f"🚀 X Thread Extractor v2.3.0 (Performance Mode)")
     print(f"{'═' * 60}")
     print(f"URL racine      : {config.root_url}")
     print(f"Profondeur max  : {config.max_depth}")
@@ -818,11 +852,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         replies = parse_page(page, exclude_id=root_identifier, state=state, config=config)
         print(f"\n  {len(replies)} réponse(s) directe(s) au tweet racine.")
 
-        def _save_partial():
+        branches_since_save = 0
+        last_partial_save_at = 0.0
+
+        def _save_partial(force: bool = False):
+            nonlocal branches_since_save, last_partial_save_at
+            if config.partial_save_every <= 0 and not force:
+                return
+            branches_since_save += 1
+            now = time.time()
+            enough_branches = config.partial_save_every > 0 and branches_since_save >= config.partial_save_every
+            enough_time = now - last_partial_save_at >= config.partial_save_interval_s
+            if not force and not (enough_branches and enough_time):
+                return
             save_intermediate(
                 config.output_path, config.root_url, root_data, replies,
                 state, config, started_at,
             )
+            branches_since_save = 0
+            last_partial_save_at = now
 
         crawl_reply_branches(
             page, config.root_url, root_identifier, replies,

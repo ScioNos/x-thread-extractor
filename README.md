@@ -2,9 +2,9 @@
 
 Outil Python local pour extraire un tweet X/Twitter et ses branches de réponses via Playwright.
 
-**Version 2.2.1** — Mode stealth anti-détection + optimisations de performance + analyse Debuk via API OpenAI-compatible + garde-fous de crawl.
+**Version 2.3.0** — Optimisations performance adaptatives + mode stealth anti-détection + analyse Debuk via API OpenAI-compatible + garde-fous de crawl.
 
-**Nouveau v2.2.1** : garde-fous de crawl, tests portables et analyse Debuk plus robuste. Mode stealth toujours activé par défaut.
+**Nouveau v2.3.0** : extraction plus rapide avec scroll/expand adaptatifs, mode `--fast` renforcé, tri récence désactivable et sauvegardes partielles espacées.
 
 ## Installation
 ```bash
@@ -93,8 +93,9 @@ python x_thread_extractor.py <url> --max-pages 50 --max-tweets 300 --crawl-timeo
 
 | Option | Description | Défaut |
 |---|---|---|
-| `--fast` | **Mode ultra-rapide** (1 scroll, 1 expand, délais minimaux) | Désactivé |
+| `--fast` | **Mode ultra-rapide** (1 scroll, 1 expand, délais minimaux, tri récence désactivé) | Désactivé |
 | `--no-stealth` | **Désactive le mode furtif** anti-détection | Activé |
+| `--no-sort-latest` | Ne tente pas le tri des réponses par récence, pour gagner du temps | Désactivé |
 | `--max-depth N` | Profondeur de récursion | 10 |
 | `--max-pages N` | Nombre maximal de pages tweet à visiter avant arrêt propre | 200 |
 | `--max-tweets N` | Nombre maximal de tweets à collecter/parser avant arrêt propre | 1000 |
@@ -108,11 +109,13 @@ python x_thread_extractor.py <url> --max-pages 50 --max-tweets 300 --crawl-timeo
 | `--analysis-model MODEL` | Surcharge du modèle de rapport final | `.env` |
 | `--research-model MODEL` | Surcharge du modèle de recherche factuelle | `.env` |
 | `--no-search` | Analyse sans DDGS ni vérification web | Désactivé |
-| `--nav-wait N` | Secondes d'attente après navigation | 1.5 (0.8 en fast) |
+| `--partial-save-every N` | Sauvegarde partielle toutes les N branches, 0 pour désactiver | 5 |
+| `--partial-save-interval-s N` | Délai minimal entre deux sauvegardes partielles | 20 |
+| `--nav-wait N` | Secondes d'attente après navigation | 1.5 (0.5 en fast) |
 | `--scroll-passes N` | Nombre de scrolls par page | 3 (1 en fast) |
-| `--scroll-delay N` | Délai entre scrolls (secondes) | 0.8 (0.5 en fast) |
+| `--scroll-delay N` | Délai entre scrolls (secondes) | 0.8 (0.25 en fast) |
 | `--expand-passes N` | Nombre de passes "afficher plus" | 3 (1 en fast) |
-| `--expand-delay N` | Délai après clic "afficher plus" | 1.0 (0.6 en fast) |
+| `--expand-delay N` | Délai après clic "afficher plus" | 1.0 (0.3 en fast) |
 | `--chrome-exe PATH` | Chemin vers l'exécutable Chrome | Auto-détecté |
 | `--profile-dir PATH` | Répertoire du profil navigateur persistant | `./chromium_profile` |
 
@@ -141,6 +144,14 @@ Ce script ouvre un navigateur avec le mode stealth et te permet de tester sur de
 
 ## Comportement
 
+### Nouveautés v2.3.0
+- **Mode `--fast` renforcé** : délais réduits, timeout abaissé et tri par récence désactivé automatiquement
+- **Scroll adaptatif** : arrêt anticipé quand la hauteur de page ne progresse plus
+- **Expansion adaptative** : arrêt si aucun nouveau tweet n'apparaît après les clics "afficher plus"
+- **Limite de clics expand** : plafonne les clics par passe pour éviter les boucles lentes sur les gros fils
+- **Tri désactivable** : nouvelle option `--no-sort-latest` pour éviter une étape coûteuse
+- **Sauvegardes partielles optimisées** : nouvelles options `--partial-save-every` et `--partial-save-interval-s`, écriture compacte et atomique
+
 ### Nouveautés v2.2.1
 - **Garde-fous de crawl** : arrêt propre via `--max-pages`, `--max-tweets` et `--crawl-timeout-s`
 - **Métadonnées d'arrêt** : ajout de `stopped_by_limit` et `stop_reason` dans la sortie JSON
@@ -161,16 +172,18 @@ Ce script ouvre un navigateur avec le mode stealth et te permet de tester sur de
 ### Optimisations v2.0.0
 - **Suppression du rechargement de page parente** : gain de ~70% de performance en éliminant les rechargements inutiles après chaque branche
 - **Scroll/expand réduits** : 3 passes au lieu de 8 (1 en mode `--fast`)
+- **Arrêt anticipé intelligent** : stoppe scroll/expand quand la page ne progresse plus
 - **Délais optimisés** : attentes réduites tout en maintenant la fiabilité
+- **Sauvegardes partielles espacées** : moins de réécritures JSON complètes pendant le crawl
 - **Délais aléatoires** : variation de ±20-40% pour simuler un comportement humain (mode stealth)
 - **Métriques de performance** : affiche le nombre de rechargements évités
 
 ### Processus d'extraction
 - Charge le tweet racine
-- Bascule les réponses sur le tri "Récents" quand possible
+- Bascule les réponses sur le tri "Récents" quand possible, sauf `--fast` ou `--no-sort-latest`
 - Scrolle et tente d'ouvrir les réponses supplémentaires
 - Explore récursivement les branches **sans recharger la page parente** (optimisation majeure)
-- **Sauvegarde intermédiaire** (`.partial.json`) après chaque branche de profondeur 1 pour éviter toute perte en cas de crash
+- **Sauvegarde intermédiaire** (`.partial.json`) toutes les 5 branches et au minimum toutes les 20s par défaut, pour limiter les écritures coûteuses
 - Génère un fichier JSON horodaté par défaut et supprime le fichier partiel
 
 ## Fichier de sortie
@@ -206,7 +219,7 @@ Par défaut, la sortie est générée dans le dossier du script avec un nom de t
 | Mode | Vitesse | Usage recommandé |
 |---|---|---|
 | **Standard** | ~70% plus rapide que v1.0 | Extraction complète et fiable |
-| **Fast (`--fast`)** | ~85% plus rapide que v1.0 | Gros fils, tests rapides |
+| **Fast (`--fast`)** | ~85-90% plus rapide que v1.0 | Gros fils, tests rapides |
 
 **Exemple** : Un fil qui prenait 20 minutes en v1.0 prend maintenant ~6 minutes en mode standard, ou ~3 minutes en mode `--fast`.
 
@@ -253,6 +266,7 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour tous les détails.
 
 ## Historique des Versions
 
+- **v2.3.0** (2026-05-04) : Optimisations performance adaptatives, fast mode renforcé, sauvegardes partielles espacées
 - **v2.2.1** (2026-05-04) : Garde-fous de crawl, tests portables, robustesse LLM/DDGS
 - **v2.2.0** (2026-05-01) : Analyse Debuk, config `.env`, API OpenAI-compatible, recherche DDGS
 - **v2.1.0** (2026-05-01) : Mode stealth anti-détection, délais aléatoires, masquage WebDriver

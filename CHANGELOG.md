@@ -2,6 +2,31 @@
 
 All notable changes to X Thread Extractor will be documented in this file.
 
+## [2.3.0] - 2026-05-04
+
+### ⚡ Adaptive Performance Release
+
+#### Added
+- Added `--no-sort-latest` to skip the reply sorting step when speed is preferred.
+- Added `--partial-save-every` to control how often partial JSON snapshots are written.
+- Added `--partial-save-interval-s` to enforce a minimum delay between partial saves.
+- Added `MAX_EXPAND_CLICKS_PER_PASS` to cap expensive "show more" click loops.
+
+#### Improved
+- Strengthened `--fast` mode with lower waits, lower page timeout and automatic sort skipping.
+- Improved scrolling performance by stopping early when page height no longer grows.
+- Improved reply expansion by stopping early when clicks do not reveal new tweet articles.
+- Reduced stealth-mode minimum waits for scroll and expand loops while keeping randomized timing.
+- Reduced partial-save overhead with compact JSON and atomic temp-file replacement.
+- Reduced default partial-save frequency from every branch to every 5 branches and at least 20 seconds apart.
+
+#### Documentation
+- Updated README options, performance notes and extraction behavior for the new performance controls.
+
+#### Testing
+- `python -m py_compile x_thread_extractor.py thread_analysis.py test_stealth.py tests/*.py` passes.
+- `python -m unittest discover -s tests -v` passes with 37 tests.
+
 ## [2.2.1] - 2026-05-04
 
 ### 🛡️ Robustness, Guardrails & Portable Tests
